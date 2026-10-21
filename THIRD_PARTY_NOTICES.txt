@@ -1,0 +1,10 @@
+GlassBoard uses Qt 6.8.3 (Core, Gui, Widgets and deployed plugins), dynamically linked.
+Qt is copyright The Qt Company Ltd. and its contributors.
+Qt is available under LGPL version 3, GPL, and commercial terms as applicable.
+Qt source and license information: https://www.qt.io/download-qt-installer-oss
+https://code.qt.io/cgit/qt/qtbase.git/tag/?h=v6.8.3
+https://www.gnu.org/licenses/lgpl-3.0.html
+Users may replace the dynamically linked Qt libraries with compatible builds.
+
+Microsoft Visual C++ Runtime is copyright Microsoft Corporation and distributed
+under the Microsoft Visual Studio redistribution terms.
