@@ -1,5 +1,6 @@
 #include <QtWidgets>
 #include <windows.h>
+#include "board_controls.h"
 
 struct Stroke { QPolygonF points; QColor color; qreal width; bool erase; };
 
@@ -12,6 +13,35 @@ class Board : public QWidget {
     int thickness = 5, eraserSize = 35;
     QSlider *sizeSlider;
     QLabel *sizeLabel;
+    QSpinBox *sizeNumber;
+    QFrame *sizePopup, *palettePopup;
+    BrushPreview *preview;
+    IconButton *colorButton, *sizeButton;
+    DragHandle *handle;
+    QLabel *toast;
+    QTimer toastTimer;
+    void notify(const QString &text, bool persistent = false) {
+        toastTimer.stop(); toast->setFixedWidth(qBound(200,width()-40,520));toast->setWordWrap(true);toast->setText(text); toast->adjustSize();
+        toast->move(qMax(10,(width()-toast->width())/2),height()-toast->height()-20);
+        toast->show(); toast->raise(); if(!persistent) toastTimer.start(2600);
+    }
+    void syncSizeUi() {
+        QSignalBlocker sliderBlock(sizeSlider), numberBlock(sizeNumber);
+        sizeSlider->setValue(toolSize()); sizeNumber->setValue(toolSize());
+        sizeLabel->setText(erasing?"Размер губки":"Толщина маркера");
+        preview->diameter=toolSize();preview->erase=erasing;preview->ink=ink;preview->update();
+        sizeButton->setToolTip(QString("%1: %2 px").arg(erasing?"Губка":"Маркер").arg(toolSize()));
+    }
+    void setInk(QColor color) { if(color.isValid()){ink=color;colorButton->accent=color;colorButton->update();syncSizeUi();refreshCursors();} }
+    void openPopup(QFrame *popup) {
+        if(popup->isVisible()){popup->hide();return;}
+        sizePopup->hide();palettePopup->hide();
+        QPoint pos=panel->mapToGlobal(QPoint(-popup->width()-10,30));
+        const QRect available=screen()->availableGeometry();
+        pos.setX(qBound(available.left(),pos.x(),qMax(available.left(),available.right()-popup->width()+1)));
+        pos.setY(qBound(available.top(),pos.y(),qMax(available.top(),available.bottom()-popup->height()+1)));
+        popup->move(pos);popup->show();popup->raise();
+    }
     int toolSize() const { return erasing ? eraserSize : thickness; }
     bool erasing = false, drawing = false, passing = false, hotkey = false;
     QCursor markerCursor, spongeCursor;
@@ -52,7 +82,7 @@ class Board : public QWidget {
         else if(canvas().contains(pt)) setCursor(erasing?spongeCursor:markerCursor);
         else setCursor(Qt::SizeAllCursor);
     }
-    QRect canvas() const { return rect().adjusted(8, 8, -80, -8); }
+    QRect canvas() const { return rect().adjusted(8, 50, -80, -8); }
     void renderInk(QPainter &p) const {
         for (const auto &s : strokes) {
             p.setCompositionMode(s.erase ? QPainter::CompositionMode_Clear : QPainter::CompositionMode_SourceOver);
@@ -66,15 +96,13 @@ class Board : public QWidget {
         img.setDevicePixelRatio(devicePixelRatioF()); img.fill(Qt::transparent);
         QPainter p(&img); p.setRenderHint(QPainter::Antialiasing); p.setClipRect(canvas()); renderInk(p); return img;
     }
-    QPushButton *button(QString text, QString tip, std::function<void()> action, bool check = false) {
-        auto *b = new QPushButton(text, panel); b->setFixedSize(48, 40);
-        b->setToolTip(tip); b->setCheckable(check); connect(b, &QPushButton::clicked, this, action); return b;
+    IconButton *button(ToolIcon icon, QString tip, std::function<void()> action, bool check = false) {
+        auto *b = new IconButton(icon, panel);
+        b->setToolTip(tip);b->setAccessibleName(tip); b->setCheckable(check); connect(b, &QPushButton::clicked, this, action); return b;
     }
     void tool(bool erase) {
         erasing = erase; marker->setChecked(!erase); eraser->setChecked(erase);
-        const QSignalBlocker blocker(sizeSlider); sizeSlider->setValue(toolSize());
-        sizeLabel->setText(QString::number(toolSize()) + " px");
-        sizeSlider->setToolTip(erasing ? "Размер губки: 1–50 px" : "Размер маркера: 1–50 px");
+        syncSizeUi();
         refreshCursors(); update();
     }
     void undo() { if (!strokes.isEmpty()) { redoStack.push_back(strokes.takeLast()); update(); } }
@@ -86,10 +114,12 @@ class Board : public QWidget {
         auto ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, passing ? ex | WS_EX_TRANSPARENT : ex & ~WS_EX_TRANSPARENT);
         passButton->setChecked(passing); status->setText(passing ? "СКВОЗЬ" : "СТЕКЛО"); update();
+        notify(passing?"Клики проходят сквозь окно · Ctrl+Alt+G — вернуть рисование":"Рисование включено",passing);
     }
     void screenshot(std::function<void(const QImage &)> completed = {}) {
         const QRect area(mapToGlobal(canvas().topLeft()), canvas().size());
         const QImage overlay = inkImage().copy(QRect(canvas().topLeft() * devicePixelRatioF(), canvas().size() * devicePixelRatioF()));
+        sizePopup->hide();palettePopup->hide();
         hide();
         QTimer::singleShot(220, this, [this, area, overlay, completed] {
             QImage shot(area.size() * devicePixelRatioF(), QImage::Format_ARGB32_Premultiplied);
@@ -106,6 +136,7 @@ class Board : public QWidget {
             }
             QApplication::clipboard()->setImage(shot);
             show();
+            notify("Снимок скопирован · Ctrl+V — вставить");
             if (completed) { completed(shot); return; }
             const auto path = QFileDialog::getSaveFileName(this, "Снимок уже скопирован — сохранить PNG", QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + "/GlassBoard_" + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss") + ".png", "PNG (*.png)");
             if (!path.isEmpty() && !shot.save(path)) QMessageBox::warning(this, "GlassBoard", "Не удалось сохранить изображение.");
@@ -117,7 +148,12 @@ protected:
         if (msg->message == WM_HOTKEY && msg->wParam == 1) { pass(); *result = 0; return true; }
         return false;
     }
-    void resizeEvent(QResizeEvent *) override { panel->move(width() - 70, (height() - panel->height()) / 2); update(); }
+    void resizeEvent(QResizeEvent *) override {
+        panel->move(width() - 70, (height() - panel->height()) / 2);
+        handle->move((width()-handle->width())/2,10);
+        if(toast->isVisible())toast->move(qMax(10,(width()-toast->width())/2),height()-toast->height()-20);
+        if(sizePopup)sizePopup->hide();if(palettePopup)palettePopup->hide();update();
+    }
     void paintEvent(QPaintEvent *) override {
         QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
         p.setPen(Qt::NoPen); p.setBrush(QColor(210, 233, 242, passing ? 3 : 12)); p.drawRoundedRect(rect().adjusted(6,6,-6,-6), 12,12);
@@ -146,34 +182,64 @@ protected:
 public:
     Board() {
         setWindowTitle("GlassBoard " + QCoreApplication::applicationVersion()); setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Window);
-        setAttribute(Qt::WA_TranslucentBackground); setMouseTracking(true); setMinimumSize(260,540); resize(1000,680);
-        panel = new QWidget(this); panel->setObjectName("tools"); panel->setFixedSize(60,492);
-        panel->setStyleSheet("QWidget#tools { background:#202830; border:1px solid #64717b; border-radius:16px; } QPushButton { color:#e4edf3; background:transparent; border:0; border-radius:9px; font:18px 'Segoe UI'; } QPushButton:hover { background:#3c4955; } QPushButton:checked { background:#f2cc69; color:#202830; } QLabel {color:#acbac4; font:8px 'Segoe UI';} QComboBox {background:#36424d;color:white;border:0;border-radius:5px;padding:3px;} ");
-        auto *layout = new QVBoxLayout(panel); layout->setContentsMargins(5,10,5,10); layout->setSpacing(3);
-        auto *grip = new QLabel("⠿",panel); grip->setAlignment(Qt::AlignCenter); grip->setAttribute(Qt::WA_TransparentForMouseEvents); layout->addWidget(grip);
-        marker=button("✎","Маркер (B)",[this]{tool(false);},true); layout->addWidget(marker);
-        eraser=button("▱","Губка (E)",[this]{tool(true);},true); layout->addWidget(eraser);
-        layout->addWidget(button("●","Цвет маркера",[this]{auto c=QColorDialog::getColor(ink,this,"Цвет маркера");if(c.isValid()) { ink=c; refreshCursors(); }}));
-        sizeLabel=new QLabel("5 px",panel); sizeLabel->setAlignment(Qt::AlignCenter); layout->addWidget(sizeLabel);
-        sizeSlider=new QSlider(Qt::Horizontal,panel); sizeSlider->setRange(1,50); sizeSlider->setValue(5); sizeSlider->setFixedHeight(28);
-        sizeSlider->setStyleSheet("QSlider::groove:horizontal {height:4px;background:#64717b;border-radius:2px;} QSlider::handle:horizontal {background:#f2cc69;width:12px;margin:-6px 0;border-radius:6px;}");
-        layout->addWidget(sizeSlider);
-        connect(sizeSlider,&QSlider::valueChanged,this,[this](int value){(erasing ? eraserSize : thickness)=value;sizeLabel->setText(QString::number(value)+" px");refreshCursors();});
-        layout->addWidget(button("↶","Отменить (Ctrl+Z)",[this]{undo();}));
-        layout->addWidget(button("▧","Снимок: в буфер обмена и PNG (Ctrl+S)",[this]{screenshot();}));
-        passButton=button("⇢","Пропуск кликов / возврат: Ctrl+Alt+G",[this]{pass();},true); layout->addWidget(passButton);
-        layout->addWidget(button("⌫","Стереть всё",[this]{if(!strokes.isEmpty() && QMessageBox::question(this,"Очистить стекло?","Удалить все заметки?")==QMessageBox::Yes){strokes.clear();redoStack.clear();update();}}));
-        layout->addWidget(button("×","Выход (Alt+F4)",[this]{close();}));
+        setAttribute(Qt::WA_TranslucentBackground); setMouseTracking(true); setMinimumSize(260,600); resize(1000,680);
+        panel = new QWidget(this); panel->setObjectName("tools"); panel->setFixedSize(60,540);
+        panel->setStyleSheet("QWidget#tools { background:#202830; border:1px solid #64717b; border-radius:16px; } QLabel {color:#acbac4; font:8px 'Segoe UI';}");
+        handle=new DragHandle(this);
+        toast=new QLabel(this);toast->setAttribute(Qt::WA_TransparentForMouseEvents);
+        toast->setStyleSheet("background:#202830;color:#e4edf3;border:1px solid #64717b;border-radius:10px;padding:10px 14px;font:12px 'Segoe UI';");toast->hide();
+        toastTimer.setSingleShot(true);connect(&toastTimer,&QTimer::timeout,toast,&QWidget::hide);
+        const QString popupStyle="QFrame#popup {background:#202830;border:1px solid #64717b;border-radius:12px;} QLabel {color:#e4edf3;font:12px 'Segoe UI';} QPushButton {color:#e4edf3;background:#36444f;border:0;border-radius:8px;padding:8px;} QPushButton:hover {background:#485b68;} QSpinBox {color:#e4edf3;background:#141b21;border:1px solid #64717b;border-radius:6px;padding:6px;font:13px 'Segoe UI';}";
+        sizePopup=new QFrame(this,Qt::Popup|Qt::FramelessWindowHint);sizePopup->setObjectName("popup");sizePopup->setStyleSheet(popupStyle);sizePopup->setFixedSize(260,196);
+        auto *sizeLayout=new QVBoxLayout(sizePopup);sizeLayout->setContentsMargins(16,14,16,14);
+        auto *sizeRow=new QHBoxLayout;sizeLabel=new QLabel(sizePopup);sizeRow->addWidget(sizeLabel);sizeRow->addStretch();
+        sizeNumber=new QSpinBox(sizePopup);sizeNumber->setRange(1,50);sizeNumber->setSuffix(" px");sizeNumber->setAccessibleName("Точный размер инструмента");sizeRow->addWidget(sizeNumber);sizeLayout->addLayout(sizeRow);
+        sizeSlider=new QSlider(Qt::Horizontal,sizePopup);sizeSlider->setRange(1,50);sizeSlider->setValue(5);sizeSlider->setMinimumHeight(32);sizeSlider->setAccessibleName("Размер инструмента от 1 до 50");
+        sizeSlider->setStyleSheet("QSlider::groove:horizontal {height:4px;background:#64717b;border-radius:2px;} QSlider::handle:horizontal {background:#f2cc69;width:16px;margin:-7px 0;border-radius:8px;}");sizeLayout->addWidget(sizeSlider);
+        preview=new BrushPreview(sizePopup);sizeLayout->addWidget(preview);
+        connect(sizeSlider,&QSlider::valueChanged,this,[this](int value){(erasing?eraserSize:thickness)=value;syncSizeUi();refreshCursors();});
+        connect(sizeNumber,qOverload<int>(&QSpinBox::valueChanged),sizeSlider,&QSlider::setValue);
+        palettePopup=new QFrame(this,Qt::Popup|Qt::FramelessWindowHint);palettePopup->setObjectName("popup");palettePopup->setStyleSheet(popupStyle);palettePopup->setFixedSize(224,188);
+        auto *paletteLayout=new QVBoxLayout(palettePopup);paletteLayout->setContentsMargins(14,12,14,12);paletteLayout->addWidget(new QLabel("Цвет маркера",palettePopup));
+        auto *swatches=new QGridLayout;swatches->setSpacing(4);
+        const QStringList colors={"#ffcf56","#f26e75","#70b5ff","#79d5aa","#ffffff","#202830","#bd98f7","#f3a66b"};
+        for(int i=0;i<colors.size();++i){auto *swatch=new IconButton(ToolIcon::Color,palettePopup);swatch->accent=QColor(colors[i]);swatch->setToolTip(colors[i]);swatch->setAccessibleName("Цвет "+colors[i]);swatches->addWidget(swatch,i/4,i%4);connect(swatch,&QPushButton::clicked,this,[this,color=colors[i]]{setInk(QColor(color));palettePopup->hide();});}
+        paletteLayout->addLayout(swatches);auto *customColor=new QPushButton("Другой цвет…",palettePopup);paletteLayout->addWidget(customColor);
+        connect(customColor,&QPushButton::clicked,this,[this]{palettePopup->hide();setInk(QColorDialog::getColor(ink,this,"Цвет маркера"));});
+        auto *layout = new QVBoxLayout(panel); layout->setContentsMargins(8,10,8,10); layout->setSpacing(2);
+        auto section=[&](QString text){auto *label=new QLabel(text,panel);label->setAlignment(Qt::AlignCenter);label->setFixedHeight(20);layout->addWidget(label);};
+        auto divider=[&]{auto *line=new QFrame(panel);line->setFixedHeight(1);line->setStyleSheet("background:#44515b;");layout->addSpacing(5);layout->addWidget(line);layout->addSpacing(5);};
+        section("РИСОВАТЬ");
+        marker=button(ToolIcon::Marker,"Маркер (B)",[this]{tool(false);},true); layout->addWidget(marker);
+        eraser=button(ToolIcon::Sponge,"Губка (E)",[this]{tool(true);},true); layout->addWidget(eraser);
+        colorButton=button(ToolIcon::Color,"Палитра маркера",[this]{openPopup(palettePopup);});layout->addWidget(colorButton);
+        sizeButton=button(ToolIcon::Size,"Размер инструмента",[this]{syncSizeUi();openPopup(sizePopup);});layout->addWidget(sizeButton);
+        divider();section("ДЕЙСТВИЯ");
+        layout->addWidget(button(ToolIcon::Undo,"Отменить (Ctrl+Z)",[this]{undo();}));
+        layout->addWidget(button(ToolIcon::Camera,"Снимок: в буфер обмена и PNG (Ctrl+S)",[this]{screenshot();}));
+        passButton=button(ToolIcon::Pass,"Пропуск кликов / возврат: Ctrl+Alt+G",[this]{pass();},true); layout->addWidget(passButton);
+        layout->addWidget(button(ToolIcon::Clear,"Стереть всё",[this]{if(!strokes.isEmpty() && QMessageBox::question(this,"Очистить стекло?","Удалить все заметки?")==QMessageBox::Yes){strokes.clear();redoStack.clear();notify("Стекло очищено");update();}}));
+        divider();layout->addWidget(button(ToolIcon::Close,"Выход (Alt+F4)",[this]{close();}));
         status=new QLabel("СТЕКЛО",panel);status->setAlignment(Qt::AlignCenter);layout->addWidget(status);
         auto shortcut=[this](QKeySequence seq,std::function<void()> fn){auto *s=new QShortcut(seq,this);connect(s,&QShortcut::activated,this,fn);};
         shortcut(QKeySequence("B"),[this]{tool(false);}); shortcut(QKeySequence("E"),[this]{tool(true);});
         shortcut(QKeySequence::Undo,[this]{undo();}); shortcut(QKeySequence("Ctrl+Shift+Z"),[this]{redo();}); shortcut(QKeySequence::Save,[this]{screenshot();});
         QSettings s; if(s.contains("geometry")) restoreGeometry(s.value("geometry").toByteArray());
-        ink=s.value("color",ink).value<QColor>(); thickness=qBound(1,s.value("width",5).toInt(),50); eraserSize=qBound(1,s.value("eraserSize",35).toInt(),50);
+        ink=s.value("color",ink).value<QColor>();colorButton->accent=ink; thickness=qBound(1,s.value("width",5).toInt(),50); eraserSize=qBound(1,s.value("eraserSize",35).toInt(),50);
         tool(false); hotkey=RegisterHotKey(reinterpret_cast<HWND>(winId()),1,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,'G');
     }
     ~Board() override { if(hotkey) UnregisterHotKey(reinterpret_cast<HWND>(winId()),1); }
     bool smoke(const QString &path) {
+        const QString evidence=QFileInfo(path).absolutePath();
+        openPopup(palettePopup); bool uiOk=palettePopup->isVisible();
+        palettePopup->grab().save(evidence+"/palette.png");palettePopup->hide();
+        setInk(QColor("#70b5ff"));uiOk &= colorButton->accent==ink;
+        openPopup(sizePopup);uiOk &= sizePopup->isVisible();
+        sizeNumber->setValue(17);uiOk &= thickness==17 && sizeSlider->value()==17 && preview->diameter==17;
+        sizePopup->grab().save(evidence+"/size-popup.png");sizePopup->hide();
+        notify("Снимок скопирован · Ctrl+V — вставить");uiOk &= toast->isVisible();
+        grab().save(evidence+"/ui-overview.png");toast->hide();toastTimer.stop();
+        uiOk &= handle->geometry().bottom()<canvas().top();
         tool(false); sizeSlider->setValue(1); bool sizesOk=toolSize()==1;
         sizeSlider->setValue(50); sizesOk &= toolSize()==50;
         tool(true); sizeSlider->setValue(1); sizesOk &= toolSize()==1;
@@ -182,7 +248,7 @@ public:
         sizeSlider->setValue(5); tool(true); sizesOk &= toolSize()==50;
         sizeSlider->setValue(35); tool(false);
         strokes={{{QPointF(40,80),QPointF(180,80)},Qt::red,8,false}};
-        auto img=inkImage(); bool ok=sizesOk && qAlpha(img.pixel(90*devicePixelRatioF(),80*devicePixelRatioF()))>0;
+        auto img=inkImage(); bool ok=uiOk && sizesOk && qAlpha(img.pixel(90*devicePixelRatioF(),80*devicePixelRatioF()))>0;
         strokes.push_back({{QPointF(90,60),QPointF(90,100)},Qt::black,20,true});
         img=inkImage(); ok &= qAlpha(img.pixel(90*devicePixelRatioF(),80*devicePixelRatioF()))==0;
         undo(); ok &= strokes.size()==1; redo(); ok &= strokes.size()==2;
