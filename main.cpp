@@ -78,6 +78,7 @@ class Board : public QWidget {
         commitText();QMessageBox::information(this,"Быстрые команды GlassBoard",
             "B — маркер    E — губка\nA — стрелка    R — прямоугольник    T — текст\n"
             "G — стекло / непрозрачная доска    C — палитра\n"
+            "Q — настройки инструмента у курсора\n"
             "Shift при рисовании — квадрат / стрелка с шагом 45°\n"
             "[ / ] или Ctrl+колесо — размер инструмента\n"
             "Пробел + перетаскивание / средняя кнопка — переместить окно\n"
@@ -93,6 +94,12 @@ class Board : public QWidget {
     QLabel *sizeLabel;
     QSpinBox *sizeNumber;
     QFrame *sizePopup, *palettePopup;
+    QFrame *quickPopup=nullptr;
+    QSlider *quickSlider=nullptr;
+    QSpinBox *quickNumber=nullptr;
+    QLabel *quickTitle=nullptr;
+    BrushPreview *quickPreview=nullptr;
+    QWidget *quickColors=nullptr;
     BrushPreview *preview;
     IconButton *colorButton, *sizeButton;
     DragHandle *handle;
@@ -111,16 +118,37 @@ class Board : public QWidget {
         sizeLabel->setText(erasing?"Размер губки":text?"Размер текста":"Толщина линии");
         preview->diameter=toolSize();preview->erase=erasing;preview->text=text;preview->ink=ink;preview->update();
         sizeButton->setToolTip(QString("%1: %2 px · [ / ] или Ctrl+колесо").arg(erasing?"Губка":text?"Текст":"Линия").arg(toolSize()));
+        if(quickSlider){
+            QSignalBlocker sliderBlock(quickSlider),numberBlock(quickNumber);
+            quickSlider->setRange(text?8:1,text?72:50);quickNumber->setRange(text?8:1,text?72:50);
+            quickSlider->setValue(toolSize());quickNumber->setValue(toolSize());
+            const QString name=erasing?"Губка":text?"Текст":activeTool==DrawingTool::Arrow?"Стрелка":activeTool==DrawingTool::Rectangle?"Прямоугольник":"Маркер";
+            quickTitle->setText(name+" · настройки");quickColors->setVisible(!erasing);
+            quickPopup->setFixedHeight(erasing?220:360);
+            quickPreview->diameter=toolSize();quickPreview->erase=erasing;quickPreview->text=text;quickPreview->ink=ink;quickPreview->update();
+        }
     }
     void setInk(QColor color) { if(color.isValid()){ink=color;colorButton->accent=color;colorButton->update();syncSizeUi();refreshCursors();} }
     void openPopup(QFrame *popup) {
         if(popup->isVisible()){popup->hide();return;}
-        sizePopup->hide();palettePopup->hide();
+        sizePopup->hide();palettePopup->hide();if(quickPopup)quickPopup->hide();
         QPoint pos=panel->mapToGlobal(QPoint(-popup->width()-10,30));
         const QRect available=screen()->availableGeometry();
         pos.setX(qBound(available.left(),pos.x(),qMax(available.left(),available.right()-popup->width()+1)));
         pos.setY(qBound(available.top(),pos.y(),qMax(available.top(),available.bottom()-popup->height()+1)));
         popup->move(pos);popup->show();popup->raise();
+    }
+    void quickSettings(QPoint anchor=QCursor::pos()) {
+        if(textEditor)return;
+        if(quickPopup->isVisible()){quickPopup->hide();setFocus();return;}
+        if(draft)finishDraft();syncSizeUi();sizePopup->hide();palettePopup->hide();
+        const QRect bounds=QGuiApplication::screenAt(anchor)?QGuiApplication::screenAt(anchor)->availableGeometry():screen()->availableGeometry();
+        QPoint position=anchor+QPoint(12,12);
+        if(position.x()+quickPopup->width()>bounds.right()+1)position.setX(anchor.x()-quickPopup->width()-12);
+        if(position.y()+quickPopup->height()>bounds.bottom()+1)position.setY(anchor.y()-quickPopup->height()-12);
+        position.setX(qBound(bounds.left(),position.x(),qMax(bounds.left(),bounds.right()-quickPopup->width()+1)));
+        position.setY(qBound(bounds.top(),position.y(),qMax(bounds.top(),bounds.bottom()-quickPopup->height()+1)));
+        quickPopup->move(position);quickPopup->show();quickPopup->raise();quickSlider->setFocus();
     }
     int toolSize() const { return erasing ? eraserSize : activeTool==DrawingTool::Text?textSize:thickness; }
     bool erasing = false, drawing = false, passing = false, hotkey = false;
@@ -201,7 +229,7 @@ class Board : public QWidget {
         const QRect area(mapToGlobal(canvas().topLeft()), canvas().size());
         const QImage overlay = inkImage().copy(QRect(canvas().topLeft() * devicePixelRatioF(), canvas().size() * devicePixelRatioF()));
         const bool solid=solidGlass;
-        sizePopup->hide();palettePopup->hide();
+        sizePopup->hide();palettePopup->hide();quickPopup->hide();
         hide();
         QTimer::singleShot(220, this, [this, area, overlay, solid, toClipboard, completed, savePath] {
             QImage shot(area.size() * devicePixelRatioF(), QImage::Format_ARGB32_Premultiplied);
@@ -231,7 +259,15 @@ class Board : public QWidget {
         });
     }
 protected:
+    void contextMenuEvent(QContextMenuEvent *event) override {
+        if(canvas().contains(event->pos()) && !textEditor){quickSettings(event->globalPos());event->accept();return;}
+        QWidget::contextMenuEvent(event);
+    }
     bool eventFilter(QObject *object,QEvent *event) override {
+        if(quickPopup && quickPopup->isVisible() && event->type()==QEvent::KeyPress){
+            auto *widget=qobject_cast<QWidget *>(object);auto *key=static_cast<QKeyEvent *>(event);
+            if(widget && (widget==quickPopup || quickPopup->isAncestorOf(widget)) && (key->key()==Qt::Key_Escape || (key->key()==Qt::Key_Q && key->modifiers()==Qt::NoModifier))){if(!key->isAutoRepeat()){quickPopup->hide();setFocus();}return true;}
+        }
         if(object==textEditor && event->type()==QEvent::KeyPress){
             auto *key=static_cast<QKeyEvent *>(event);
             if(key->key()==Qt::Key_Escape){commitText(false);setFocus();return true;}
@@ -266,7 +302,7 @@ protected:
         panel->move(width() - panel->width()-10, (height() - panel->height()) / 2);
         handle->move((width()-handle->width())/2,10);
         if(toast->isVisible())toast->move(qMax(10,(width()-toast->width())/2),height()-toast->height()-20);
-        if(sizePopup)sizePopup->hide();if(palettePopup)palettePopup->hide();update();
+        if(sizePopup)sizePopup->hide();if(palettePopup)palettePopup->hide();if(quickPopup)quickPopup->hide();update();
     }
     void paintEvent(QPaintEvent *) override {
         QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
@@ -329,6 +365,21 @@ public:
         for(int i=0;i<colors.size();++i){auto *swatch=new IconButton(ToolIcon::Color,palettePopup);swatch->accent=QColor(colors[i]);swatch->setToolTip(colors[i]);swatch->setAccessibleName("Цвет "+colors[i]);swatches->addWidget(swatch,i/4,i%4);connect(swatch,&QPushButton::clicked,this,[this,color=colors[i]]{setInk(QColor(color));palettePopup->hide();});}
         paletteLayout->addLayout(swatches);auto *customColor=new QPushButton("Другой цвет…",palettePopup);paletteLayout->addWidget(customColor);
         connect(customColor,&QPushButton::clicked,this,[this]{palettePopup->hide();setInk(QColorDialog::getColor(ink,this,"Цвет заметок"));});
+        quickPopup=new QFrame(this,Qt::Popup|Qt::FramelessWindowHint);quickPopup->setObjectName("popup");quickPopup->setCursor(Qt::ArrowCursor);quickPopup->setStyleSheet(popupStyle);quickPopup->setFixedSize(280,360);
+        auto *quickLayout=new QVBoxLayout(quickPopup);quickLayout->setContentsMargins(14,12,14,12);quickLayout->setSpacing(6);
+        quickTitle=new QLabel("Маркер · настройки",quickPopup);quickLayout->addWidget(quickTitle);
+        auto *quickRow=new QHBoxLayout;quickRow->addWidget(new QLabel("Размер",quickPopup));quickRow->addStretch();
+        quickNumber=new QSpinBox(quickPopup);quickNumber->setSuffix(" px");quickNumber->setAccessibleName("Быстрый размер инструмента");quickRow->addWidget(quickNumber);quickLayout->addLayout(quickRow);
+        quickSlider=new QSlider(Qt::Horizontal,quickPopup);quickSlider->setMinimumHeight(32);quickSlider->setAccessibleName("Быстрая настройка размера");quickSlider->setStyleSheet(sizeSlider->styleSheet());quickLayout->addWidget(quickSlider);
+        quickPreview=new BrushPreview(quickPopup);quickPreview->setFixedHeight(44);quickLayout->addWidget(quickPreview);
+        quickColors=new QWidget(quickPopup);auto *colorsLayout=new QVBoxLayout(quickColors);colorsLayout->setContentsMargins(0,0,0,0);colorsLayout->setSpacing(6);
+        auto *quickSwatches=new QGridLayout;quickSwatches->setSpacing(4);
+        for(int i=0;i<colors.size();++i){auto *swatch=new IconButton(ToolIcon::Color,quickColors);swatch->accent=QColor(colors[i]);swatch->setToolTip(colors[i]);swatch->setAccessibleName("Быстрый цвет "+colors[i]);quickSwatches->addWidget(swatch,i/4,i%4);connect(swatch,&QPushButton::clicked,this,[this,color=colors[i]]{setInk(QColor(color));});}
+        colorsLayout->addLayout(quickSwatches);auto *quickCustom=new QPushButton("Другой цвет…",quickColors);colorsLayout->addWidget(quickCustom);
+        connect(quickCustom,&QPushButton::clicked,this,[this]{quickPopup->hide();setInk(QColorDialog::getColor(ink,this,"Цвет заметок"));});quickLayout->addWidget(quickColors);
+        auto *quickHint=new QLabel("Q / Esc — закрыть · настройки применяются сразу",quickPopup);quickHint->setWordWrap(true);quickHint->setStyleSheet("color:#acbac4;font:11px 'Segoe UI';");quickLayout->addWidget(quickHint);
+        connect(quickSlider,&QSlider::valueChanged,sizeSlider,&QSlider::setValue);connect(quickNumber,qOverload<int>(&QSpinBox::valueChanged),sizeSlider,&QSlider::setValue);
+        quickPopup->installEventFilter(this);for(auto *widget:quickPopup->findChildren<QWidget *>())widget->installEventFilter(this);
         auto *layout = new QVBoxLayout(panel); layout->setContentsMargins(8,10,8,10); layout->setSpacing(2);
         auto section=[&](QString text){auto *label=new QLabel(text,panel);label->setAlignment(Qt::AlignCenter);label->setFixedHeight(20);layout->addWidget(label);};
         auto divider=[&]{auto *line=new QFrame(panel);line->setFixedHeight(1);line->setStyleSheet("background:#44515b;");layout->addSpacing(5);layout->addWidget(line);layout->addSpacing(5);};
@@ -354,10 +405,11 @@ public:
         bottom->addWidget(button(ToolIcon::Help,"Быстрые команды (F1)",[this]{showHelp();}));
         bottom->addWidget(button(ToolIcon::Close,"Выход (Alt+F4)",[this]{close();}));
         status=new QLabel("СТЕКЛО",panel);status->setAlignment(Qt::AlignCenter);layout->addWidget(status);
-        auto shortcut=[this](QKeySequence seq,std::function<void()> fn,bool editingSafe=false){auto *s=new QShortcut(seq,this);connect(s,&QShortcut::activated,this,fn);if(!editingSafe)toolShortcuts<<s;};
+        auto shortcut=[this](QKeySequence seq,std::function<void()> fn,bool editingSafe=false){auto *s=new QShortcut(seq,this);if(seq==QKeySequence("Q"))s->setAutoRepeat(false);connect(s,&QShortcut::activated,this,fn);if(!editingSafe)toolShortcuts<<s;};
         shortcut(QKeySequence("B"),[this]{tool(false);}); shortcut(QKeySequence("E"),[this]{tool(true);});
         shortcut(QKeySequence("A"),[this]{chooseTool(DrawingTool::Arrow);});shortcut(QKeySequence("R"),[this]{chooseTool(DrawingTool::Rectangle);});shortcut(QKeySequence("T"),[this]{chooseTool(DrawingTool::Text);});
         shortcut(QKeySequence("G"),[this]{toggleGlass();});shortcut(QKeySequence("C"),[this]{openPopup(palettePopup);});
+        shortcut(QKeySequence("Q"),[this]{quickSettings();});
         shortcut(QKeySequence("["),[this]{sizeSlider->setValue(toolSize()-1);});shortcut(QKeySequence("]"),[this]{sizeSlider->setValue(toolSize()+1);});
         shortcut(QKeySequence("F1"),[this]{showHelp();});
         shortcut(QKeySequence::Undo,[this]{undo();}); shortcut(QKeySequence("Ctrl+Shift+Z"),[this]{redo();});shortcut(QKeySequence("Ctrl+Y"),[this]{redo();});
@@ -374,7 +426,26 @@ public:
         const QString evidence=QFileInfo(path).absolutePath();
         QFile diagnostics(evidence+"/checks.txt");diagnostics.open(QIODevice::WriteOnly);QTextStream checks(&diagnostics);
         auto checkpoint=[&](const char *name,bool state){checks<<name<<": "<<(state?"PASS":"FAIL")<<Qt::endl;};
+        QShortcut *quickKey=nullptr;for(auto *key:toolShortcuts)if(key->key()==QKeySequence("Q"))quickKey=key;
+        bool quickOk=quickKey!=nullptr;
+        if(quickKey)QMetaObject::invokeMethod(quickKey,"activated",Qt::DirectConnection);
+        quickOk &= quickPopup->isVisible();
+        quickNumber->setValue(13);quickOk &= toolSize()==13 && sizeSlider->value()==13 && quickSlider->value()==13 && quickPreview->diameter==13;
+        for(auto *swatch:quickColors->findChildren<QPushButton *>())if(swatch->accessibleName()=="Быстрый цвет #f26e75")swatch->click();
+        quickOk &= ink==QColor("#f26e75") && quickPreview->ink==ink;
+        quickPopup->grab().save(evidence+"/quick-settings.png");
+        QKeyEvent closeQuick(QEvent::KeyPress,Qt::Key_Q,Qt::NoModifier);QApplication::sendEvent(quickNumber,&closeQuick);quickOk &= !quickPopup->isVisible();
+        chooseTool(DrawingTool::Eraser);quickSettings(screen()->availableGeometry().bottomRight());
+        quickOk &= quickPopup->isVisible() && !quickColors->isVisible() && screen()->availableGeometry().contains(quickPopup->frameGeometry());
+        quickNumber->setValue(41);quickOk &= eraserSize==41 && thickness==13;
+        QKeyEvent escapeQuick(QEvent::KeyPress,Qt::Key_Escape,Qt::NoModifier);QApplication::sendEvent(quickSlider,&escapeQuick);quickOk &= !quickPopup->isVisible();
+        chooseTool(DrawingTool::Text);quickSettings();quickNumber->setValue(60);quickOk &= textSize==60 && quickSlider->maximum()==72;
+        quickSettings();quickOk &= !quickPopup->isVisible();beginText({50,120});
+        quickOk &= quickKey && !quickKey->isEnabled();quickSettings();quickOk &= !quickPopup->isVisible();
+        QKeyEvent typeQ(QEvent::KeyPress,Qt::Key_Q,Qt::NoModifier,"q");QApplication::sendEvent(textEditor,&typeQ);quickOk &= textEditor->toPlainText()=="q";commitText(false);
+        chooseTool(DrawingTool::Marker);sizeSlider->setValue(5);eraserSize=35;textSize=24;syncSizeUi();checkpoint("Q menu/color/size/context/closing/text typing",quickOk);
         openPopup(palettePopup); bool uiOk=palettePopup->isVisible();
+        uiOk &= quickOk;
         palettePopup->grab().save(evidence+"/palette.png");palettePopup->hide();
         setInk(QColor("#70b5ff"));uiOk &= colorButton->accent==ink;
         openPopup(sizePopup);uiOk &= sizePopup->isVisible();
