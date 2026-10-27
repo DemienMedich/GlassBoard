@@ -116,12 +116,12 @@ class Board : public QWidget {
         passButton->setChecked(passing); status->setText(passing ? "СКВОЗЬ" : "СТЕКЛО"); update();
         notify(passing?"Клики проходят сквозь окно · Ctrl+Alt+G — вернуть рисование":"Рисование включено",passing);
     }
-    void screenshot(std::function<void(const QImage &)> completed = {}) {
+    void screenshot(bool toClipboard, std::function<void(const QImage &)> completed = {}, QString savePath = {}) {
         const QRect area(mapToGlobal(canvas().topLeft()), canvas().size());
         const QImage overlay = inkImage().copy(QRect(canvas().topLeft() * devicePixelRatioF(), canvas().size() * devicePixelRatioF()));
         sizePopup->hide();palettePopup->hide();
         hide();
-        QTimer::singleShot(220, this, [this, area, overlay, completed] {
+        QTimer::singleShot(220, this, [this, area, overlay, toClipboard, completed, savePath] {
             QImage shot(area.size() * devicePixelRatioF(), QImage::Format_ARGB32_Premultiplied);
             shot.setDevicePixelRatio(devicePixelRatioF()); shot.fill(Qt::black);
             { QPainter p(&shot);
@@ -134,12 +134,18 @@ class Board : public QWidget {
               }
               p.drawImage(QPoint(0, 0), overlay);
             }
-            QApplication::clipboard()->setImage(shot);
             show();
-            notify("Снимок скопирован · Ctrl+V — вставить");
-            if (completed) { completed(shot); return; }
-            const auto path = QFileDialog::getSaveFileName(this, "Снимок уже скопирован — сохранить PNG", QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + "/GlassBoard_" + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss") + ".png", "PNG (*.png)");
-            if (!path.isEmpty() && !shot.save(path)) QMessageBox::warning(this, "GlassBoard", "Не удалось сохранить изображение.");
+            if(toClipboard) {
+                QApplication::clipboard()->setImage(shot);
+                notify("Снимок скопирован · Ctrl+V — вставить");
+            } else {
+                const auto path = !savePath.isEmpty() ? savePath : QFileDialog::getSaveFileName(this, "Сохранить снимок PNG", QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + "/GlassBoard_" + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss") + ".png", "PNG (*.png)");
+                if (!path.isEmpty()) {
+                    if(!shot.save(path)) QMessageBox::warning(this, "GlassBoard", "Не удалось сохранить изображение.");
+                    else notify("Снимок сохранён в PNG");
+                }
+            }
+            if(completed) completed(shot);
         });
     }
 protected:
@@ -183,7 +189,7 @@ public:
     Board() {
         setWindowTitle("GlassBoard " + QCoreApplication::applicationVersion()); setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Window);
         setAttribute(Qt::WA_TranslucentBackground); setMouseTracking(true); setMinimumSize(260,600); resize(1000,680);
-        panel = new QWidget(this); panel->setObjectName("tools"); panel->setFixedSize(60,540);
+        panel = new QWidget(this); panel->setObjectName("tools"); panel->setFixedSize(60,580);
         panel->setStyleSheet("QWidget#tools { background:#202830; border:1px solid #64717b; border-radius:16px; } QLabel {color:#acbac4; font:8px 'Segoe UI';}");
         handle=new DragHandle(this);
         toast=new QLabel(this);toast->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -216,14 +222,16 @@ public:
         sizeButton=button(ToolIcon::Size,"Размер инструмента",[this]{syncSizeUi();openPopup(sizePopup);});layout->addWidget(sizeButton);
         divider();section("ДЕЙСТВИЯ");
         layout->addWidget(button(ToolIcon::Undo,"Отменить (Ctrl+Z)",[this]{undo();}));
-        layout->addWidget(button(ToolIcon::Camera,"Снимок: в буфер обмена и PNG (Ctrl+S)",[this]{screenshot();}));
+        layout->addWidget(button(ToolIcon::Camera,"Сохранить снимок PNG (Ctrl+S)",[this]{screenshot(false);}));
+        layout->addWidget(button(ToolIcon::Clipboard,"Копировать снимок (Ctrl+Shift+C)",[this]{screenshot(true);}));
         passButton=button(ToolIcon::Pass,"Пропуск кликов / возврат: Ctrl+Alt+G",[this]{pass();},true); layout->addWidget(passButton);
         layout->addWidget(button(ToolIcon::Clear,"Стереть всё",[this]{if(!strokes.isEmpty() && QMessageBox::question(this,"Очистить стекло?","Удалить все заметки?")==QMessageBox::Yes){strokes.clear();redoStack.clear();notify("Стекло очищено");update();}}));
         divider();layout->addWidget(button(ToolIcon::Close,"Выход (Alt+F4)",[this]{close();}));
         status=new QLabel("СТЕКЛО",panel);status->setAlignment(Qt::AlignCenter);layout->addWidget(status);
         auto shortcut=[this](QKeySequence seq,std::function<void()> fn){auto *s=new QShortcut(seq,this);connect(s,&QShortcut::activated,this,fn);};
         shortcut(QKeySequence("B"),[this]{tool(false);}); shortcut(QKeySequence("E"),[this]{tool(true);});
-        shortcut(QKeySequence::Undo,[this]{undo();}); shortcut(QKeySequence("Ctrl+Shift+Z"),[this]{redo();}); shortcut(QKeySequence::Save,[this]{screenshot();});
+        shortcut(QKeySequence::Undo,[this]{undo();}); shortcut(QKeySequence("Ctrl+Shift+Z"),[this]{redo();}); shortcut(QKeySequence::Save,[this]{screenshot(false);});
+        shortcut(QKeySequence("Ctrl+Shift+C"),[this]{screenshot(true);});
         QSettings s; if(s.contains("geometry")) restoreGeometry(s.value("geometry").toByteArray());
         ink=s.value("color",ink).value<QColor>();colorButton->accent=ink; thickness=qBound(1,s.value("width",5).toInt(),50); eraserSize=qBound(1,s.value("eraserSize",35).toInt(),50);
         tool(false); hotkey=RegisterHotKey(reinterpret_cast<HWND>(winId()),1,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,'G');
@@ -258,15 +266,18 @@ public:
         auto *previous=new QMimeData;
         const auto *data=QApplication::clipboard()->mimeData();
         if(data) for(const auto &format:data->formats()) previous->setData(format,data->data(format));
-        screenshot([previous,path,done](const QImage &shot){
+        QApplication::clipboard()->setText("GlassBoard-save-clipboard-sentinel");
+        screenshot(false,[this,previous,path,done](const QImage &saved){
+            const bool saveOk=QApplication::clipboard()->text()=="GlassBoard-save-clipboard-sentinel"
+                && QImage(path).convertToFormat(QImage::Format_RGB32)==saved.convertToFormat(QImage::Format_RGB32);
+            screenshot(true,[previous,saveOk,done](const QImage &shot){
             const QImage copied=QApplication::clipboard()->image();
-            bool ok=!copied.isNull() && copied.size()==shot.size()
+            bool ok=saveOk && !copied.isNull() && copied.size()==shot.size()
                 && copied.convertToFormat(QImage::Format_RGB32)==shot.convertToFormat(QImage::Format_RGB32);
-            ok &= shot.save(path);
-            ok &= QImage(path).convertToFormat(QImage::Format_RGB32)==copied.convertToFormat(QImage::Format_RGB32);
             QApplication::clipboard()->setMimeData(previous);
             done(ok);
-        });
+            });
+        },path);
     }
 };
 int main(int argc,char **argv) {

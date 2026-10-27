@@ -1,7 +1,7 @@
 #pragma once
 #include <QtWidgets>
 
-enum class ToolIcon { Marker, Sponge, Color, Size, Undo, Camera, Pass, Clear, Close };
+enum class ToolIcon { Marker, Sponge, Color, Size, Undo, Camera, Clipboard, Pass, Clear, Close };
 
 class IconButton : public QPushButton {
     ToolIcon icon;
@@ -32,6 +32,8 @@ protected:
             p.drawPolyline(QPolygonF{{8,4},{3,9},{8,14}}); {QPainterPath path;path.moveTo(3,9);path.cubicTo(23,2,25,23,10,21);p.drawPath(path);}break;
         case ToolIcon::Camera:
             p.drawRoundedRect(QRectF(2,7,20,15),3,3);p.drawPolyline(QPolygonF{{7,7},{9,3},{15,3},{17,7}});p.drawEllipse(QRectF(8,11,8,8));break;
+        case ToolIcon::Clipboard:
+            p.drawRoundedRect(QRectF(4,4,16,18),2,2);p.setBrush(QColor("#202830"));p.drawRoundedRect(QRectF(8,2,8,5),1.5,1.5);p.setBrush(Qt::NoBrush);p.drawLine(8,12,16,12);p.drawLine(8,17,14,17);break;
         case ToolIcon::Pass:
             p.drawLine(2,12,22,12);p.drawPolyline(QPolygonF{{16,6},{22,12},{16,18}});p.setPen(QPen(fg,1.5,Qt::DashLine));p.drawLine(10,2,10,22);break;
         case ToolIcon::Clear:
