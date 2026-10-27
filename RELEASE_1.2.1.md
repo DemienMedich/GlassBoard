@@ -13,4 +13,13 @@ Portable: `Z:\CPP\GlassBoard\dist\GlassBoard-1.2.1.zip`.
 
 Установка → обновление 1.2.0 → 1.2.1 → запуск без среды разработки → удаление: passed. Тестовые AppId и профиль, пользовательские данные сохранены, версия окна GlassBoard 1.2.1. Отчёт: `build\installer-lifecycle-48d291af3bf34fe083bc6a73a7706b43\report.json`.
 
-В PharosHub остаётся опубликованная 1.1.1; публикация 1.2.1 не выполнялась.
+## Публикация в PharosHub
+
+27.10.2026 опубликована 1.2.1: `Z:\Yandex.Disk\PharosHub\releases\glass-board\manifest.json`, 29 файлов, executable `GlassBoard.exe`. Синхронизированы исходный каталог Хаба и `Z:\CPP\PharosHub\package\config\apps.json`. Настройки пользовательской установленной копии Хаба не менялись.
+
+Установщик: `Z:\Yandex.Disk\PharosHub\installers\glass-board\GlassBoardSetup_1.2.1.exe`.
+SHA-256: `569DF92D70DE0809FD800DFD26A2ECD3776A5C1719CB9D2B2820014B1BF7D375`.
+
+Проверены хеши всех опубликованных и установленных файлов. Установка через `LauncherModel::installRelease` в тестовый каталог и запуск установленной версии без Qt в PATH: passed. Доказательства: `build\hub-publication-1.2.1.log`, `build\hub-install-1.2.1.txt`, `build\package-smoke-39eae746a9f34355ac23dd61dd3ba441`.
+
+Подтверждена публикация в локальной общей папке. Завершение синхронизации с сервером Яндекс.Диска отдельно не проверялось.
